@@ -1,0 +1,10 @@
+# Render blueprint — optional. You can also create the web service manually
+# in the Render dashboard exactly like the FEMA and Municode connectors.
+services:
+  - type: web
+    name: parcel-gis-mcp
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /
