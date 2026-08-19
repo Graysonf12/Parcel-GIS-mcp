@@ -260,18 +260,44 @@ IMPORTANT (SIR Step 0): a geocoded point resolves to the parcel CONTAINING the a
         };
       }
       try {
-        // --- Primary path: geocode, then spatial query at the point ---
+        // --- Primary path: geocode, then point queries at the point + a probe
+        // ring around it. The ring handles geocoded points that land in street
+        // right-of-way on layers with no ROW parcels (e.g. FL statewide) —
+        // point-intersects is the only query type that is reliably fast on
+        // very large hosted layers (envelope/distance time out), so we probe
+        // with offset POINTS instead of buffering.
         let geocodeNote = "";
         try {
           const geo = await geocodeAddress(address, city, source.state);
           if (geo) {
-            const data = await queryLayer(source.url, {
-              ...spatialParams(geo.lon, geo.lat, source.nativeSr),
-              outFields: "*",
-              returnGeometry: true,
-              outSR: 4326,
-            });
-            const features = data.features ?? [];
+            const M_PER_DEG_LAT = 111320;
+            const mPerDegLon = M_PER_DEG_LAT * Math.cos((geo.lat * Math.PI) / 180);
+            const probes: { de: number; dn: number; label: string }[] = [
+              { de: 0, dn: 0, label: "at geocoded point" },
+              ...[25, 60].flatMap((d) => [
+                { de: d, dn: 0, label: `${d}m E of geocoded point` },
+                { de: -d, dn: 0, label: `${d}m W of geocoded point` },
+                { de: 0, dn: d, label: `${d}m N of geocoded point` },
+                { de: 0, dn: -d, label: `${d}m S of geocoded point` },
+              ]),
+            ];
+            let features: ArcgisFeature[] = [];
+            let hitLabel = "";
+            for (const probe of probes) {
+              const pLon = geo.lon + probe.de / mPerDegLon;
+              const pLat = geo.lat + probe.dn / M_PER_DEG_LAT;
+              const data = await queryLayer(source.url, {
+                ...spatialParams(pLon, pLat, source.nativeSr),
+                outFields: "*",
+                returnGeometry: true,
+                outSR: 4326,
+              });
+              features = data.features ?? [];
+              if (features.length) {
+                hitLabel = probe.label;
+                break;
+              }
+            }
             if (features.length) {
               const results = features.map((f) => ({
                 attributes: compactAttributes(f.attributes),
@@ -281,7 +307,7 @@ IMPORTANT (SIR Step 0): a geocoded point resolves to the parcel CONTAINING the a
                 source_id: source.id,
                 source_name: source.name,
                 verification: verificationNote(source),
-                resolution: "geocode+spatial",
+                resolution: `geocode+spatial (${hitLabel})`,
                 geocoder_matched_address: geo.matched,
                 geocoded_point: { lon: geo.lon, lat: geo.lat },
                 count: features.length,
@@ -290,7 +316,10 @@ IMPORTANT (SIR Step 0): a geocoded point resolves to the parcel CONTAINING the a
               const md: string[] = [
                 `# Address search: '${address}'${city ? ` (city: ${city})` : ""}`,
                 `Source: ${source.name}`,
-                `Resolution: geocoded to "${geo.matched}" (${geo.lat.toFixed(6)}, ${geo.lon.toFixed(6)}) → parcel at that point`,
+                `Resolution: geocoded to "${geo.matched}" (${geo.lat.toFixed(6)}, ${geo.lon.toFixed(6)}) → parcel ${hitLabel}`,
+                ...(hitLabel !== "at geocoded point"
+                  ? [`⚠ The direct point sat in street right-of-way; this parcel came from an offset probe — verify its situs address matches the request.`]
+                  : []),
                 "",
               ];
               for (const [i, f] of features.entries()) {
@@ -307,7 +336,7 @@ IMPORTANT (SIR Step 0): a geocoded point resolves to the parcel CONTAINING the a
                 structuredContent: output,
               };
             }
-            geocodeNote = `Geocoded to "${geo.matched}" (${geo.lat.toFixed(6)}, ${geo.lon.toFixed(6)}) but no parcel found at that point. `;
+            geocodeNote = `Geocoded to "${geo.matched}" (${geo.lat.toFixed(6)}, ${geo.lon.toFixed(6)}) but no parcel found at that point or within a 60m probe ring. `;
           } else {
             geocodeNote = `Census geocoder found no match for '${[address, city, source.state].filter(Boolean).join(", ")}'. `;
           }
@@ -321,6 +350,14 @@ IMPORTANT (SIR Step 0): a geocoded point resolves to the parcel CONTAINING the a
             content: [{
               type: "text",
               text: `${geocodeNote}Source '${source.id}' has no address fields for a SQL fallback. Supply a city to improve geocoding, or use parcel_lookup with an identifier.`,
+            }],
+          };
+        }
+        if (source.slowSql) {
+          return {
+            content: [{
+              type: "text",
+              text: `${geocodeNote}SQL fallback skipped: attribute scans reliably time out on ${source.name} (live-measured). Options: correct/complete the address for the geocoder (street type and city matter), supply the parcel identifier and use parcel_lookup, or query a point via gis_layer_identify if coordinates are known.`,
             }],
           };
         }

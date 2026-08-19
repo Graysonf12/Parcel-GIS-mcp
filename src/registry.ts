@@ -50,6 +50,15 @@ export interface ParcelSource {
    * projected client-side before spatial queries (see projections.ts).
    */
   nativeSr?: number;
+  /**
+   * True when SQL LIKE/attribute scans reliably time out on this layer
+   * (very large hosted layers). The address-search SQL fallback is skipped
+   * with an explanatory message instead of burning the timeout budget.
+   * Live-measured on fl-statewide 2026-08: point-intersects ~2s, but LIKE,
+   * envelope, and distance queries ALL time out — only point queries and
+   * exact attribute equality are fast.
+   */
+  slowSql?: boolean;
   /** ISO date last confirmed live, or false = not yet verified ("verify at run") */
   verified: string | false;
   notes?: string;
@@ -89,9 +98,10 @@ export const PARCEL_SOURCES: ParcelSource[] = [
       salePrice: "SALE_PRC1",
       saleYear: "SALE_YR1",
     },
+    slowSql: true,
     verified: "2026-08-17",
     notes:
-      "PARCEL_ID formatting varies by county (dashes/dots may be stripped relative to the county PCN). If an exact match fails the server automatically retries as a contains-match; a supplied identifier that still misses should be re-tried with county formatting variants before concluding it is wrong. LIVE FINDING 2026-08-17: SQL LIKE scans (address search) time out on this 10M-row layer — address resolution goes through the geocode-first path automatically; spatial and exact-ID queries are fast.",
+      "PARCEL_ID formatting varies by county (dashes/dots may be stripped relative to the county PCN). If an exact match fails the server automatically retries as a contains-match; a supplied identifier that still misses should be re-tried with county formatting variants before concluding it is wrong. LIVE FINDINGS 2026-08: only POINT-intersects (~2s) and exact attribute equality are fast on this 10M-row layer — LIKE, envelope, and distance queries all time out (hence slowSql + the probe-ring address strategy). No ROW parcels in this layer: an address point in the street returns zero features, which is what the probe ring exists to solve (proven: 100 N Main St Wildwood → 28m-east probe → G06L124).",
   },
   {
     id: "ky-jefferson",
